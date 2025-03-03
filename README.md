@@ -26,9 +26,9 @@ Created by [Tadashi Jei](https://www.tadashijei.com)
 1. Clone this repository or download the installation script:
 
 ```bash
-git clone https://github.com/yourusername/jupyterhub-cloudflare-installer.git
+git clone https://github.com/tadashijei/jupyterhub-cloudflare-installer.git
 # or
-wget https://raw.githubusercontent.com/yourusername/jupyterhub-cloudflare-installer/main/install_jupyterhub_with_cloudflare.sh
+wget https://raw.githubusercontent.com/tadashijei/jupyterhub-cloudflare-installer/main/install_jupyterhub_with_cloudflare.sh
 ```
 
 2. Make the script executable:
