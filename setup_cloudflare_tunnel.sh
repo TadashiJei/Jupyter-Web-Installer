@@ -501,11 +501,7 @@ else
   echo -e "Run: sudo systemctl enable jupyterhub"
 fi
 
-# Step 5: Install as a service
-section "Step 5: Installing as a Service"
-echo -e "Installing cloudflared as a system service..."
-
-cloudflared service install
+# We're all done! The service has been installed above.
 systemctl enable cloudflared
 systemctl start cloudflared
 
