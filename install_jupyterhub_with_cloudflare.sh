@@ -36,6 +36,34 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+# Function to check if a package is installed
+check_installed() {
+  if command -v $1 &> /dev/null; then
+    return 0  # Package is installed
+  else
+    return 1  # Package is not installed
+  fi
+}
+
+# Check if JupyterHub is already installed
+if check_installed jupyterhub; then
+  echo -e "${YELLOW}JupyterHub is already installed.${NC}"
+  if systemctl list-unit-files | grep -q jupyterhub.service; then
+    if systemctl is-active --quiet jupyterhub; then
+      echo -e "${GREEN}JupyterHub service is running.${NC}"
+    else
+      echo -e "${RED}JupyterHub service is installed but not running.${NC}"
+    fi
+    
+    echo -e "\nDo you want to reinstall JupyterHub? This may overwrite existing configuration."
+    read -p "Continue with installation? (Y/n): " CONTINUE
+    if [[ "$CONTINUE" =~ ^[Nn]$ ]]; then
+      echo -e "${YELLOW}Installation canceled by user.${NC}"
+      exit 0
+    fi
+  fi
+fi
+
 # Check Ubuntu version
 if ! grep -q "Ubuntu 22.04" /etc/os-release; then
   echo -e "${RED}This script is designed for Ubuntu 22.04 LTS. Your system may not be compatible.${NC}"

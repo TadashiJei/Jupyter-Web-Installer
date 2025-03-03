@@ -71,8 +71,59 @@ section() {
   echo -e "${GREEN}=== $1 ===${NC}"
 }
 
+# Function to display completion ASCII art with installation details
+show_completion_art() {
+  local domain=$1
+  echo -e "${GREEN}"
+  cat << "EOF"
+
+  _____                 _       _       _   _             
+ |_   _|               | |     | |     | | (_)            
+   | |  _ __  ___  __ _| | __ _| |_ ___| |  _  ___  _ __  
+   | | | '_ \/ __|/ _` | |/ _` | __/ _ \ | | |/ _ \| '_ \ 
+  _| |_| | | \__ \ (_| | | (_| | ||  __/ | | | (_) | | | |
+ |_____|_| |_|___/\__,_|_|\__,_|\__\___|_| |_|\___/|_| |_|
+                                                          
+   _____                      _      _           _ 
+  / ____|                    | |    | |         | |
+ | (___  _   _  ___ ___ ___  | |    | |__   __ _| |
+  \___ \| | | |/ __/ __/ _ \ | |    | '_ \ / _` | |
+  ____) | |_| | (_| (_|  __/ | |____| | | | (_| |_|
+ |_____/ \__,_|\___\___\___| |______|_| |_|\__,_(_)
+                                                   
+
+EOF
+  echo -e "${NC}"
+  
+  echo -e "${GREEN}=== Installation Complete! ===${NC}"
+  echo -e "\nYour JupyterHub is now accessible at: ${BLUE}https://$domain${NC}"
+  echo -e "\n${YELLOW}Installation Details:${NC}"
+  echo -e "  - JupyterHub Status: $(systemctl is-active jupyterhub &>/dev/null && echo -e "${GREEN}Running${NC}" || echo -e "${RED}Not Running${NC}")"
+  echo -e "  - Cloudflare Tunnel Status: $(systemctl is-active cloudflared &>/dev/null && echo -e "${GREEN}Running${NC}" || echo -e "${RED}Not Running${NC}")"
+  echo -e "  - JupyterHub Config: /etc/jupyterhub/jupyterhub_config.py"
+  echo -e "  - Cloudflare Tunnel Config: ~/.cloudflared/config.yml"
+  
+  echo -e "\n${BLUE}Thank you for using the JupyterHub with Cloudflare Tunnel Installer!${NC}"
+  echo -e "If this tool was helpful, please consider starring the repository at:"
+  echo -e "${BLUE}https://github.com/TadashiJei/Jupyter-Web-Installer${NC}"
+  echo -e "\nCreated with ♥ by Tadashi Jei (https://tadashijei.com)"
+}
+
+# Function to check service status
+check_service_status() {
+  local service_name=$1
+  if systemctl is-active --quiet $service_name; then
+    echo -e "${GREEN}$service_name is running${NC}"
+    return 0
+  else
+    echo -e "${RED}$service_name is not running${NC}"
+    return 1
+  fi
+}
+
 # Function for automatic Cloudflare setup using API
 automatic_cloudflare_setup() {
+  echo -e "\n${YELLOW}Starting automatic Cloudflare setup...${NC}"
   local api_key=$1
   local email=$2
   local domain=$3
@@ -188,6 +239,24 @@ EOF
   echo "$tunnel_id"
 }
 
+# Check if cloudflared service is already installed and running
+if systemctl list-unit-files | grep -q cloudflared.service; then
+  section "Cloudflare Tunnel Service Check"
+  echo -e "${YELLOW}Cloudflare Tunnel service is already installed.${NC}"
+  check_service_status "cloudflared"
+  
+  echo -e "\nDo you want to reconfigure the Cloudflare Tunnel? This will overwrite existing configuration."
+  read -p "Continue? (Y/n): " CONTINUE
+  if [[ "$CONTINUE" =~ ^[Nn]$ ]]; then
+    echo -e "${YELLOW}Setup canceled by user.${NC}"
+    exit 0
+  fi
+  
+  # Stop the service before reconfiguring
+  echo -e "${YELLOW}Stopping cloudflared service...${NC}"
+  systemctl stop cloudflared
+fi
+
 # Setup mode selection
 section "Setup Mode Selection"
 echo -e "Choose a setup method for Cloudflare Tunnel:"
@@ -288,6 +357,20 @@ EOF
       exit 1
     fi
     
+    # Verify the API key works
+    echo -e "${YELLOW}Verifying API token...${NC}"
+    verify_response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/user/tokens/verify" \
+      -H "Authorization: Bearer $API_KEY" \
+      -H "Content-Type: application/json")
+    
+    if ! echo "$verify_response" | jq -e '.success' &>/dev/null; then
+      echo -e "${RED}API token verification failed. Please check your token.${NC}"
+      echo "Error: $(echo "$verify_response" | jq -r '.errors[0].message' 2>/dev/null || echo "Unknown error")"
+      exit 1
+    fi
+    
+    echo -e "${GREEN}API token verified successfully!${NC}"
+    
     # Get Cloudflare account email
     read -p "Enter your Cloudflare account email: " CF_EMAIL
     if [ -z "$CF_EMAIL" ]; then
@@ -315,7 +398,21 @@ EOF
       echo -e "Using default name: ${YELLOW}$TUNNEL_NAME${NC}"
     fi
     
-    # Run automatic setup
+    # Confirm before proceeding
+    echo -e "\n${YELLOW}Ready to set up Cloudflare Tunnel with the following settings:${NC}"
+    echo -e "  - Root Domain: ${BLUE}$ROOT_DOMAIN${NC}"
+    echo -e "  - Subdomain: ${BLUE}$SUBDOMAIN${NC}"
+    echo -e "  - Tunnel Name: ${BLUE}$TUNNEL_NAME${NC}"
+    echo -e "  - JupyterHub URL will be: ${BLUE}https://$SUBDOMAIN.$ROOT_DOMAIN${NC}"
+    echo
+    read -p "Continue with these settings? (Y/n): " CONTINUE
+    if [[ "$CONTINUE" =~ ^[Nn]$ ]]; then
+      echo -e "${YELLOW}Setup canceled by user.${NC}"
+      exit 0
+    fi
+    
+    # Run automatic setup with progress updates
+    echo -e "${YELLOW}Starting automatic setup process...${NC}"
     TUNNEL_UUID=$(automatic_cloudflare_setup "$API_KEY" "$CF_EMAIL" "$ROOT_DOMAIN" "$SUBDOMAIN" "$TUNNEL_NAME")
     
     # Check if automatic setup was successful
@@ -334,6 +431,75 @@ EOF
     exit 1
     ;;
 esac
+
+# Step 5: Install as a service
+section "Step 5: Installing as a Service"
+echo -e "Now we'll install cloudflared as a systemd service to ensure it starts automatically on boot."
+
+# Create the service file
+cat > /etc/systemd/system/cloudflared.service << EOF
+[Unit]
+Description=Cloudflare Tunnel daemon
+After=network.target
+
+[Service]
+TimeoutStartSec=0
+Type=simple
+User=root
+WorkingDirectory=/root
+ExecStart=/usr/local/bin/cloudflared tunnel run
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Reload systemd, enable and start the service
+echo -e "${YELLOW}Enabling and starting cloudflared service...${NC}"
+systemctl daemon-reload
+systemctl enable cloudflared
+systemctl start cloudflared
+
+# Verify the service is running
+sleep 3  # Give it a moment to start
+if systemctl is-active --quiet cloudflared; then
+  echo -e "${GREEN}Cloudflared service installed and started successfully!${NC}"
+else
+  echo -e "${RED}Warning: Cloudflared service is not running. Check logs with: sudo journalctl -u cloudflared${NC}"
+fi
+
+# Check if JupyterHub is running
+if systemctl is-active --quiet jupyterhub; then
+  echo -e "${GREEN}JupyterHub service is running.${NC}"
+else
+  echo -e "${RED}Warning: JupyterHub service is not running. Check logs with: sudo journalctl -u jupyterhub${NC}"
+fi
+
+# Show the completion ASCII art and installation details
+show_completion_art "$DOMAIN"
+
+# Final instructions
+section "Additional Information"
+echo -e "${YELLOW}Important Notes:${NC}"
+echo -e "1. It may take a few minutes for DNS changes to propagate."
+echo -e "2. If you encounter any issues, check the service status with: sudo systemctl status cloudflared"
+echo -e "3. View logs with: sudo journalctl -u cloudflared"
+
+# Check if the services are enabled to start on boot
+if systemctl is-enabled --quiet cloudflared; then
+  echo -e "${GREEN}Cloudflared service is configured to start on boot.${NC}"
+else
+  echo -e "${RED}Warning: Cloudflared service is not configured to start on boot.${NC}"
+  echo -e "Run: sudo systemctl enable cloudflared"
+fi
+
+if systemctl is-enabled --quiet jupyterhub; then
+  echo -e "${GREEN}JupyterHub service is configured to start on boot.${NC}"
+else
+  echo -e "${RED}Warning: JupyterHub service is not configured to start on boot.${NC}"
+  echo -e "Run: sudo systemctl enable jupyterhub"
+fi
 
 # Step 5: Install as a service
 section "Step 5: Installing as a Service"
