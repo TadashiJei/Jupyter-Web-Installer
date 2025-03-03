@@ -72,9 +72,11 @@ This method will guide you through the following steps:
 4. Route your domain to the tunnel
 5. Install and start cloudflared as a service
 
-### 2. Automatic Setup (API Key)
+### 2. Automatic Setup (API Authentication)
 
-This method uses the Cloudflare API to automatically set up the tunnel without browser authentication:
+This method uses the Cloudflare API to automatically set up the tunnel without browser authentication. You have two authentication options:
+
+#### A. API Token (Recommended for security)
 
 1. You'll need to create a Cloudflare API token with the following permissions:
    - Zone:DNS:Edit
@@ -87,7 +89,25 @@ This method uses the Cloudflare API to automatically set up the tunnel without b
    - Subdomain for JupyterHub
    - Tunnel name
 
-3. The script will automatically:
+#### B. Global API Key (Easier but less secure)
+
+1. Retrieve your Global API Key from your Cloudflare dashboard:
+   - Log in to your Cloudflare dashboard
+   - Click on your profile icon in the top right
+   - Select "My Profile"
+   - Navigate to the "API Tokens" tab
+   - Under "Global API Key", click "View"
+
+2. Provide the following information:
+   - Cloudflare account email
+   - Global API Key
+   - Root domain (must be already added to your Cloudflare account)
+   - Subdomain for JupyterHub
+   - Tunnel name
+
+**Note:** The Global API Key grants full access to your Cloudflare account. Use with caution and only on secure systems.
+
+3. With either authentication method, the script will automatically:
    - Create the tunnel
    - Configure DNS records
    - Set up ingress rules

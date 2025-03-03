@@ -121,9 +121,9 @@ check_service_status() {
   fi
 }
 
-# Function for automatic Cloudflare setup using API
+# Function for automatic Cloudflare setup using API Token
 automatic_cloudflare_setup() {
-  echo -e "\n${YELLOW}Starting automatic Cloudflare setup...${NC}"
+  echo -e "\n${YELLOW}Starting automatic Cloudflare setup with API Token...${NC}"
   local api_key=$1
   local email=$2
   local domain=$3
@@ -162,6 +162,24 @@ automatic_cloudflare_setup() {
   
   # Extract the account ID
   account_id=$(echo "$account_response" | jq -r '.result[0].id')
+  
+  # Check if account_id is null or empty
+  if [ "$account_id" = "null" ] || [ -z "$account_id" ]; then
+    echo -e "${RED}Failed to get a valid Account ID (received: $account_id)${NC}"
+    echo -e "${YELLOW}This typically happens when:${NC}"
+    echo -e "1. The API token doesn't have sufficient permissions"
+    echo -e "2. The API token belongs to a different Cloudflare account than the domain"
+    echo -e "\n${YELLOW}Debug information:${NC}"
+    echo -e "API Response:\n$(echo "$account_response" | jq . 2>/dev/null || echo "$account_response")"
+    
+    echo -e "\n${YELLOW}Please ensure your API token:${NC}"
+    echo -e "1. Was created in the same Cloudflare account that manages your domain"
+    echo -e "2. Has the following permissions:\n   - Account:Cloudflare Tunnel:Edit\n   - Zone:DNS:Edit"
+    echo -e "3. Has access to your account and specific zone resources"
+    
+    return 1
+  fi
+  
   echo -e "${GREEN}Account ID: $account_id${NC}"
   
   # Get Zone ID for the domain
@@ -234,6 +252,153 @@ EOF
   ingress_config="{\"ingress\":[{\"hostname\":\"$subdomain.$domain\",\"service\":\"http://localhost:8000\"},{\"service\":\"http_status:404\"}]}"
   ingress_response=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/$account_id/tunnels/$tunnel_id/configurations" \
     -H "Authorization: Bearer $api_key" \
+    -H "Content-Type: application/json" \
+    --data "$ingress_config")
+  
+  # Check if ingress configuration was successful
+  if ! echo "$ingress_response" | jq -e '.success' &>/dev/null; then
+    echo -e "${RED}Failed to configure tunnel ingress.${NC}"
+    echo "Error: $(echo "$ingress_response" | jq -r '.errors[0].message')"
+    return 1
+  fi
+  
+  echo -e "${GREEN}Tunnel ingress configured successfully${NC}"
+  
+  # Return the tunnel ID for future reference
+  echo "$tunnel_id"
+}
+
+# Function for automatic Cloudflare setup using Global API Key
+automatic_cloudflare_setup_global() {
+  echo -e "\n${YELLOW}Starting automatic Cloudflare setup with Global API Key...${NC}"
+  local api_key=$1
+  local email=$2
+  local domain=$3
+  local subdomain=$4
+  local tunnel_name=$5
+  local account_id
+  local zone_id
+  local tunnel_id
+  local tunnel_token
+  
+  # Check if curl and jq are installed
+  if ! command -v curl &> /dev/null; then
+    echo -e "${RED}Error: curl is not installed.${NC}"
+    return 1
+  fi
+  
+  if ! command -v jq &> /dev/null; then
+    echo -e "${RED}Error: jq is not installed.${NC}"
+    return 1
+  fi
+  
+  echo -e "${BLUE}Starting automatic Cloudflare Tunnel setup...${NC}"
+  
+  # Get Account ID
+  echo -e "${YELLOW}Fetching Cloudflare account information...${NC}"
+  account_response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/accounts" \
+    -H "X-Auth-Email: $email" \
+    -H "X-Auth-Key: $api_key" \
+    -H "Content-Type: application/json")
+  
+  # Check if the API call was successful
+  if ! echo "$account_response" | jq -e '.success' &>/dev/null; then
+    echo -e "${RED}Failed to fetch account information. Please check your Global API Key.${NC}"
+    echo "Error: $(echo "$account_response" | jq -r '.errors[0].message')"
+    return 1
+  fi
+  
+  # Extract the account ID
+  account_id=$(echo "$account_response" | jq -r '.result[0].id')
+  
+  # Check if account_id is null or empty
+  if [ "$account_id" = "null" ] || [ -z "$account_id" ]; then
+    echo -e "${RED}Failed to get a valid Account ID (received: $account_id)${NC}"
+    echo -e "${YELLOW}This typically happens when:${NC}"
+    echo -e "1. The Global API Key doesn't have sufficient permissions"
+    echo -e "2. The Global API Key belongs to a different Cloudflare account than the domain"
+    echo -e "\n${YELLOW}Debug information:${NC}"
+    echo -e "API Response:\n$(echo "$account_response" | jq . 2>/dev/null || echo "$account_response")"
+    
+    return 1
+  fi
+  
+  echo -e "${GREEN}Account ID: $account_id${NC}"
+  
+  # Get Zone ID for the domain
+  echo -e "${YELLOW}Fetching zone information for domain $domain...${NC}"
+  zone_response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=$domain" \
+    -H "X-Auth-Email: $email" \
+    -H "X-Auth-Key: $api_key" \
+    -H "Content-Type: application/json")
+  
+  # Check if the domain exists in Cloudflare
+  if ! echo "$zone_response" | jq -e '.success' &>/dev/null || [ "$(echo "$zone_response" | jq '.result | length')" -eq 0 ]; then
+    echo -e "${RED}Domain $domain not found in your Cloudflare account.${NC}"
+    echo -e "${YELLOW}Please add the domain to your Cloudflare account first.${NC}"
+    return 1
+  fi
+  
+  # Extract the zone ID
+  zone_id=$(echo "$zone_response" | jq -r '.result[0].id')
+  echo -e "${GREEN}Zone ID: $zone_id${NC}"
+  
+  # Create a tunnel
+  echo -e "${YELLOW}Creating Cloudflare Tunnel: $tunnel_name...${NC}"
+  tunnel_response=$(curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/$account_id/tunnels" \
+    -H "X-Auth-Email: $email" \
+    -H "X-Auth-Key: $api_key" \
+    -H "Content-Type: application/json" \
+    --data "{\"name\":\"$tunnel_name\",\"tunnel_secret\":\"$(openssl rand -hex 32)\"}")
+  
+  # Check if tunnel creation was successful
+  if ! echo "$tunnel_response" | jq -e '.success' &>/dev/null; then
+    echo -e "${RED}Failed to create tunnel.${NC}"
+    echo "Error: $(echo "$tunnel_response" | jq -r '.errors[0].message')"
+    return 1
+  fi
+  
+  # Extract tunnel ID and token
+  tunnel_id=$(echo "$tunnel_response" | jq -r '.result.id')
+  tunnel_token=$(echo "$tunnel_response" | jq -r '.result.token')
+  echo -e "${GREEN}Tunnel created with ID: $tunnel_id${NC}"
+  
+  # Save the tunnel credentials
+  mkdir -p ~/.cloudflared
+  echo "{\"AccountTag\":\"$account_id\",\"TunnelID\":\"$tunnel_id\",\"TunnelName\":\"$tunnel_name\",\"TunnelSecret\":\"$tunnel_token\"}" > ~/.cloudflared/$tunnel_id.json
+  
+  # Create config file
+  cat > ~/.cloudflared/config.yml << EOF
+url: http://localhost:8000
+tunnel: $tunnel_id
+credentials-file: /root/.cloudflared/$tunnel_id.json
+EOF
+  
+  echo -e "${GREEN}Tunnel configuration created at ~/.cloudflared/config.yml${NC}"
+  
+  # Create DNS record for the tunnel
+  echo -e "${YELLOW}Creating DNS record for $subdomain.$domain...${NC}"
+  dns_response=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records" \
+    -H "X-Auth-Email: $email" \
+    -H "X-Auth-Key: $api_key" \
+    -H "Content-Type: application/json" \
+    --data "{\"type\":\"CNAME\",\"name\":\"$subdomain\",\"content\":\"$tunnel_id.cfargotunnel.com\",\"ttl\":1,\"proxied\":true}")
+  
+  # Check if DNS record creation was successful
+  if ! echo "$dns_response" | jq -e '.success' &>/dev/null; then
+    echo -e "${RED}Failed to create DNS record.${NC}"
+    echo "Error: $(echo "$dns_response" | jq -r '.errors[0].message')"
+    return 1
+  fi
+  
+  echo -e "${GREEN}DNS record created for $subdomain.$domain${NC}"
+  
+  # Configure tunnel ingress
+  echo -e "${YELLOW}Configuring tunnel ingress...${NC}"
+  ingress_config="{\"ingress\":[{\"hostname\":\"$subdomain.$domain\",\"service\":\"http://localhost:8000\"},{\"service\":\"http_status:404\"}]}"
+  ingress_response=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/$account_id/tunnels/$tunnel_id/configurations" \
+    -H "X-Auth-Email: $email" \
+    -H "X-Auth-Key: $api_key" \
     -H "Content-Type: application/json" \
     --data "$ingress_config")
   
@@ -356,37 +521,149 @@ EOF
     # Automatic setup using API key
     section "Automatic Setup with Cloudflare API"
     echo -e "This setup method uses the Cloudflare API to automatically configure your tunnel."
-    echo -e "You will need your Cloudflare API token with the following permissions:"
+    echo -e "You have two authentication options:"
+    echo -e "${BLUE}Option 1: API Token (Recommended for security)${NC}"
+    echo -e "  Requires token with the following permissions:"
     echo -e "  - Zone:DNS:Edit"
     echo -e "  - Account:Cloudflare Tunnel:Edit"
+    
+    echo -e "${BLUE}Option 2: Global API Key (Easier but less secure)${NC}"
+    echo -e "  The Global API Key grants full access to your account"
+    echo -e "  You'll need your Cloudflare email and Global API Key"
     echo
     
-    # Get API key
-    read -p "Enter your Cloudflare API token: " API_KEY
-    if [ -z "$API_KEY" ]; then
-      echo -e "${RED}API token cannot be empty.${NC}"
+    # Let user choose authentication method
+    echo -e "Choose your authentication method:"
+    echo -e "  1) API Token (recommended)"
+    echo -e "  2) Global API Key"
+    read -p "Enter your choice (1 or 2): " AUTH_METHOD
+    echo
+    
+    # Get authentication credentials based on chosen method
+    if [[ "$AUTH_METHOD" == "2" ]]; then
+      # Global API Key method
+      read -p "Enter your Cloudflare email: " CF_EMAIL
+      if [ -z "$CF_EMAIL" ]; then
+        echo -e "${RED}Email cannot be empty.${NC}"
+        exit 1
+      fi
+      
+      read -p "Enter your Cloudflare Global API Key: " GLOBAL_API_KEY
+      if [ -z "$GLOBAL_API_KEY" ]; then
+        echo -e "${RED}Global API Key cannot be empty.${NC}"
+        exit 1
+      fi
+      
+      # Set variables for use in API calls
+      API_EMAIL="$CF_EMAIL"
+      API_KEY="$GLOBAL_API_KEY"
+      USE_GLOBAL_KEY=true
+      echo -e "${YELLOW}Using Global API Key authentication method${NC}"
+    else
+      # API Token method (default)
+      read -p "Enter your Cloudflare API token: " API_KEY
+      if [ -z "$API_KEY" ]; then
+        echo -e "${RED}API token cannot be empty.${NC}"
+        exit 1
+      fi
+      USE_GLOBAL_KEY=false
+      echo -e "${YELLOW}Using API Token authentication method${NC}"
+    fi
+    
+    # Verify the credentials work and check for necessary permissions
+    if [ "$USE_GLOBAL_KEY" = true ]; then
+      # For Global API Key, we verify by checking if we can list zones
+      echo -e "${YELLOW}Step 1/3: Verifying Global API Key...${NC}"
+      verify_response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones" \
+        -H "X-Auth-Email: $API_EMAIL" \
+        -H "X-Auth-Key: $API_KEY" \
+        -H "Content-Type: application/json")
+      
+      if ! echo "$verify_response" | jq -e '.success' &>/dev/null; then
+        echo -e "${RED}Global API Key verification failed. Please check your credentials.${NC}"
+        echo "Error: $(echo "$verify_response" | jq -r '.errors[0].message' 2>/dev/null || echo "Unknown error")"
+        exit 1
+      fi
+    else
+      # For API Token
+      echo -e "${YELLOW}Step 1/3: Verifying API token...${NC}"
+      verify_response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/user/tokens/verify" \
+        -H "Authorization: Bearer $API_KEY" \
+        -H "Content-Type: application/json")
+      
+      if ! echo "$verify_response" | jq -e '.success' &>/dev/null; then
+        echo -e "${RED}API token verification failed. Please check your token.${NC}"
+        echo "Error: $(echo "$verify_response" | jq -r '.errors[0].message' 2>/dev/null || echo "Unknown error")"
+        exit 1
+      fi
+    fi
+    
+    echo -e "${GREEN}Authentication is valid!${NC}"
+    
+    # Check account access
+    echo -e "${YELLOW}Step 2/3: Checking account access...${NC}"
+    if [ "$USE_GLOBAL_KEY" = true ]; then
+      accounts_response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/accounts" \
+        -H "X-Auth-Email: $API_EMAIL" \
+        -H "X-Auth-Key: $API_KEY" \
+        -H "Content-Type: application/json")
+    else
+      accounts_response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/accounts" \
+        -H "Authorization: Bearer $API_KEY" \
+        -H "Content-Type: application/json")
+    fi
+    
+    if ! echo "$accounts_response" | jq -e '.success' &>/dev/null || [ "$(echo "$accounts_response" | jq '.result | length')" -eq 0 ]; then
+      echo -e "${RED}API token verification failed: No access to any Cloudflare accounts.${NC}"
+      echo -e "${YELLOW}Your API token needs Account:Cloudflare Tunnel:Edit permission.${NC}"
+      echo -e "Please check your token permissions and ensure it has access to the account resources."
       exit 1
     fi
     
-    # Verify the API key works
-    echo -e "${YELLOW}Verifying API token...${NC}"
-    verify_response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/user/tokens/verify" \
-      -H "Authorization: Bearer $API_KEY" \
-      -H "Content-Type: application/json")
+    # Show available accounts to help with debugging
+    echo -e "${GREEN}Account access confirmed. Available accounts:${NC}"
+    echo "$accounts_response" | jq -r '.result[] | "  - " + .name + " (" + .id + ")"'
     
-    if ! echo "$verify_response" | jq -e '.success' &>/dev/null; then
-      echo -e "${RED}API token verification failed. Please check your token.${NC}"
-      echo "Error: $(echo "$verify_response" | jq -r '.errors[0].message' 2>/dev/null || echo "Unknown error")"
-      exit 1
+    # Check zone access for DNS
+    echo -e "${YELLOW}Step 3/3: Testing DNS zone access for $ROOT_DOMAIN...${NC}"
+    if [ "$USE_GLOBAL_KEY" = true ]; then
+      zones_response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=$ROOT_DOMAIN" \
+        -H "X-Auth-Email: $API_EMAIL" \
+        -H "X-Auth-Key: $API_KEY" \
+        -H "Content-Type: application/json")
+    else
+      zones_response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=$ROOT_DOMAIN" \
+        -H "Authorization: Bearer $API_KEY" \
+        -H "Content-Type: application/json")
     fi
     
-    echo -e "${GREEN}API token verified successfully!${NC}"
+    if ! echo "$zones_response" | jq -e '.success' &>/dev/null || [ "$(echo "$zones_response" | jq '.result | length')" -eq 0 ]; then
+      echo -e "${RED}Warning: No access to DNS zone for $ROOT_DOMAIN${NC}"
+      echo -e "${YELLOW}1. Ensure domain $ROOT_DOMAIN is added to Cloudflare${NC}"
+      echo -e "${YELLOW}2. Ensure API token has Zone:DNS:Edit permission for this domain${NC}"
+      echo -e "${YELLOW}3. Verify the domain name is correct${NC}"
+      echo -e "Would you like to continue anyway? This might fail when creating DNS records."
+      read -p "Continue anyway? (y/N): " CONTINUE_ZONE
+      if [[ ! "$CONTINUE_ZONE" =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}Setup canceled.${NC}"
+        exit 1
+      fi
+    else
+      echo -e "${GREEN}DNS zone access confirmed for $ROOT_DOMAIN${NC}"
+    fi
     
-    # Get Cloudflare account email
-    read -p "Enter your Cloudflare account email: " CF_EMAIL
-    if [ -z "$CF_EMAIL" ]; then
-      echo -e "${RED}Email cannot be empty.${NC}"
-      exit 1
+    echo -e "${GREEN}API token verified with all required permissions!${NC}"
+    
+    # Get Cloudflare account email if using API Token method
+    if [ "$USE_GLOBAL_KEY" = false ]; then
+      read -p "Enter your Cloudflare account email: " CF_EMAIL
+      if [ -z "$CF_EMAIL" ]; then
+        echo -e "${RED}Email cannot be empty.${NC}"
+        exit 1
+      fi
+    else
+      # We already have the email from earlier if using Global API Key
+      CF_EMAIL="$API_EMAIL"
     fi
     
     # Get domain information
@@ -429,7 +706,11 @@ EOF
     set +e  # Temporarily disable exit on error to capture function return
     
     # Call the function and capture its output and return value
-    TUNNEL_UUID_OUTPUT=$(automatic_cloudflare_setup "$API_KEY" "$CF_EMAIL" "$ROOT_DOMAIN" "$SUBDOMAIN" "$TUNNEL_NAME" 2>&1)
+    if [ "$USE_GLOBAL_KEY" = true ]; then
+      TUNNEL_UUID_OUTPUT=$(automatic_cloudflare_setup_global "$API_KEY" "$CF_EMAIL" "$ROOT_DOMAIN" "$SUBDOMAIN" "$TUNNEL_NAME" 2>&1)
+    else
+      TUNNEL_UUID_OUTPUT=$(automatic_cloudflare_setup "$API_KEY" "$CF_EMAIL" "$ROOT_DOMAIN" "$SUBDOMAIN" "$TUNNEL_NAME" 2>&1)
+    fi
     SETUP_STATUS=$?
     
     # Re-enable exit on error
