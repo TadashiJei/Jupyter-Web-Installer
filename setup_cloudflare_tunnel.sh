@@ -134,6 +134,17 @@ automatic_cloudflare_setup() {
   local tunnel_id
   local tunnel_token
   
+  # Check if curl and jq are installed
+  if ! command -v curl &> /dev/null; then
+    echo -e "${RED}Error: curl is not installed.${NC}"
+    return 1
+  fi
+  
+  if ! command -v jq &> /dev/null; then
+    echo -e "${RED}Error: jq is not installed.${NC}"
+    return 1
+  fi
+  
   echo -e "${BLUE}Starting automatic Cloudflare Tunnel setup...${NC}"
   
   # Get Account ID
@@ -413,11 +424,31 @@ EOF
     
     # Run automatic setup with progress updates
     echo -e "${YELLOW}Starting automatic setup process...${NC}"
-    TUNNEL_UUID=$(automatic_cloudflare_setup "$API_KEY" "$CF_EMAIL" "$ROOT_DOMAIN" "$SUBDOMAIN" "$TUNNEL_NAME")
+    
+    # Set strict error handling
+    set +e  # Temporarily disable exit on error to capture function return
+    
+    # Call the function and capture its output and return value
+    TUNNEL_UUID_OUTPUT=$(automatic_cloudflare_setup "$API_KEY" "$CF_EMAIL" "$ROOT_DOMAIN" "$SUBDOMAIN" "$TUNNEL_NAME" 2>&1)
+    SETUP_STATUS=$?
+    
+    # Re-enable exit on error
+    set -e
+    
+    # Extract the TUNNEL_UUID from the last line of output
+    TUNNEL_UUID=$(echo "$TUNNEL_UUID_OUTPUT" | tail -n1)
     
     # Check if automatic setup was successful
-    if [ $? -ne 0 ]; then
-      echo -e "${RED}Automatic setup failed. Please check the errors above.${NC}"
+    if [ $SETUP_STATUS -ne 0 ]; then
+      echo -e "${RED}Automatic setup failed. Error details:${NC}"
+      echo "$TUNNEL_UUID_OUTPUT"
+      exit 1
+    fi
+    
+    # Additional validation that we have a valid UUID
+    if ! [[ $TUNNEL_UUID =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+      echo -e "${RED}Failed to get a valid tunnel UUID. Process output:${NC}"
+      echo "$TUNNEL_UUID_OUTPUT"
       exit 1
     fi
     
@@ -501,9 +532,29 @@ else
   echo -e "Run: sudo systemctl enable jupyterhub"
 fi
 
-# We're all done! The service has been installed above.
+# Do additional checks to ensure the service is properly installed and configured
+echo -e "${YELLOW}Finalizing cloudflared service configuration...${NC}"
+
+# Double-check that the service file exists
+if [ ! -f /etc/systemd/system/cloudflared.service ]; then
+  echo -e "${YELLOW}Service file not found, creating it again...${NC}"
+  cloudflared service install
+  systemctl daemon-reload
+fi
+
+# Ensure the service is enabled and started
 systemctl enable cloudflared
-systemctl start cloudflared
+systemctl restart cloudflared
+
+# Final check to ensure the service is running
+sleep 2
+if ! systemctl is-active --quiet cloudflared; then
+  echo -e "${RED}Warning: The cloudflared service is not running after installation.${NC}"
+  echo -e "${YELLOW}Manual troubleshooting steps:${NC}"
+  echo -e "1. Check service status: sudo systemctl status cloudflared"
+  echo -e "2. Check logs: sudo journalctl -u cloudflared"
+  echo -e "3. Try manual restart: sudo systemctl restart cloudflared"
+fi
 
 # Check if service is running
 if systemctl is-active --quiet cloudflared; then
