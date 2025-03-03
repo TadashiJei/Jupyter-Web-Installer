@@ -308,19 +308,59 @@ automatic_cloudflare_setup_global() {
     return 1
   fi
   
+  # Check if API call was successful
+  if ! echo "$account_response" | jq -e '.success' &>/dev/null; then
+    echo -e "${RED}Failed to fetch account information. API call failed.${NC}"
+    echo -e "Error: $(echo "$account_response" | jq -r '.errors[0].message' 2>/dev/null || echo "Unknown error")"
+    if echo "$account_response" | jq -e '.errors[0].error_chain' &>/dev/null; then
+      echo -e "${YELLOW}Detailed errors:${NC}"
+      echo "$account_response" | jq -r '.errors[0].error_chain[] | "  - " + .message' 2>/dev/null
+    fi
+    return 1
+  fi
+  
+  # Check if results array is empty
+  if [ "$(echo "$account_response" | jq '.result | length')" -eq 0 ]; then
+    echo -e "${RED}No accounts found in the API response.${NC}"
+    echo -e "${YELLOW}This typically happens when:${NC}"
+    echo -e "1. The Global API Key doesn't have access to any accounts"
+    echo -e "2. Your Cloudflare account might have issues"
+    echo -e "\n${YELLOW}Full API Response:${NC}"
+    echo "$account_response" | jq .
+    return 1
+  fi
+  
   # Extract the account ID
   account_id=$(echo "$account_response" | jq -r '.result[0].id')
   
   # Check if account_id is null or empty
   if [ "$account_id" = "null" ] || [ -z "$account_id" ]; then
     echo -e "${RED}Failed to get a valid Account ID (received: $account_id)${NC}"
-    echo -e "${YELLOW}This typically happens when:${NC}"
-    echo -e "1. The Global API Key doesn't have sufficient permissions"
-    echo -e "2. The Global API Key belongs to a different Cloudflare account than the domain"
-    echo -e "\n${YELLOW}Debug information:${NC}"
-    echo -e "API Response:\n$(echo "$account_response" | jq . 2>/dev/null || echo "$account_response")"
+    echo -e "${YELLOW}This typically happens when the account data structure is unexpected.${NC}"
     
-    return 1
+    # List all available accounts for debugging
+    echo -e "\n${YELLOW}Available accounts in response:${NC}"
+    echo "$account_response" | jq -r '.result[] | "ID: " + .id + ", Name: " + .name' 2>/dev/null || echo "Could not parse account data"
+    
+    # Try to get account ID in a different way - look for any account with a name
+    echo -e "\n${YELLOW}Attempting alternative account ID extraction...${NC}"
+    account_id=$(echo "$account_response" | jq -r '.result[] | select(.name != null) | .id' | head -n 1)
+    
+    if [ "$account_id" = "null" ] || [ -z "$account_id" ]; then
+      # Final fallback - just take any account ID from the array
+      account_id=$(echo "$account_response" | jq -r '.result[].id' | head -n 1)
+      
+      if [ "$account_id" = "null" ] || [ -z "$account_id" ]; then
+        echo -e "${RED}All extraction methods failed. Cannot proceed without a valid account ID.${NC}"
+        echo -e "\n${YELLOW}Full API Response:${NC}"
+        echo "$account_response" | jq .
+        return 1
+      else
+        echo -e "${GREEN}Found account ID using fallback method: $account_id${NC}"
+      fi
+    else
+      echo -e "${GREEN}Found account ID using alternative method: $account_id${NC}"
+    fi
   fi
   
   echo -e "${GREEN}Account ID: $account_id${NC}"
