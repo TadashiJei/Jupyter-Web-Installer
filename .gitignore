@@ -1,0 +1,25 @@
+# JupyterHub generated files
+jupyterhub_cookie_secret
+jupyterhub.sqlite
+
+# Cloudflared credentials
+.cloudflared/
+
+# Environment variables
+.env
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# System files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.idea/
+.vscode/
+*.sublime-*
